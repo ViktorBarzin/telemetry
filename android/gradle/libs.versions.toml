@@ -1,0 +1,21 @@
+# The toolchain matches the tv Android app (AGP 8.5, Kotlin 1.9, compileSdk 34),
+# the first app to use this library, so the AAR is readable by its compiler.
+# Kotlin 2.x-compiled metadata would not be.
+
+[versions]
+agp = "8.5.2"
+kotlin = "1.9.24"
+segment = "1.27.0"
+sentry = "8.63.0"
+serialization = "1.6.3"
+junit = "4.13.2"
+
+[libraries]
+segment-android = { module = "com.segment.analytics.kotlin:android", version.ref = "segment" }
+sentry-android-core = { module = "io.sentry:sentry-android-core", version.ref = "sentry" }
+kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serialization" }
+junit = { module = "junit:junit", version.ref = "junit" }
+
+[plugins]
+android-library = { id = "com.android.library", version.ref = "agp" }
+kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }

@@ -1,0 +1,9 @@
+# JitPack builds the Android library for any tag it is asked for; use
+# android-vX.Y.Z. The Gradle project lives in android/, so the install step
+# changes into it. JitPack sets VERSION to the tag, which
+# android/telemetry/build.gradle.kts uses as the published version, and picks
+# the artifact com.github.ViktorBarzin:telemetry up from ~/.m2.
+jdk:
+  - openjdk17
+install:
+  - cd android && ./gradlew --no-daemon assembleRelease publishToMavenLocal

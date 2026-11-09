@@ -1,0 +1,58 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "viktorbarzin-telemetry"
+version = "0.1.0"
+description = "Product events, errors and JSON logs to the viktorbarzin.me telemetry standard"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Viktor Barzin" }]
+requires-python = ">=3.10"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Typing :: Typed",
+    "License :: OSI Approved :: MIT License",
+]
+dependencies = ["segment-analytics-python>=2.3,<3"]
+
+[project.optional-dependencies]
+sentry = ["sentry-sdk>=2.0,<3"]
+otel = ["opentelemetry-api>=1.20"]
+
+[project.urls]
+Source = "https://github.com/ViktorBarzin/telemetry"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "hypothesis>=6.100",
+    "mypy>=1.11",
+    "ruff>=0.6",
+    "sentry-sdk>=2.0,<3",
+    "opentelemetry-api>=1.20",
+    "opentelemetry-sdk>=1.20",
+    "types-requests",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/viktorbarzin_telemetry"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.mypy]
+strict = true
+python_version = "3.10"
+mypy_path = "stubs"
+files = ["src", "tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF", "ANN"]

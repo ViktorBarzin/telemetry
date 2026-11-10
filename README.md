@@ -18,7 +18,7 @@ Each library sets up three things for an app:
 |---|---|---|
 | Python | `viktorbarzin-telemetry` on PyPI | `pip install viktorbarzin-telemetry` (add `[sentry]` for Sentry) |
 | Go | `github.com/ViktorBarzin/telemetry/go` | `go get github.com/ViktorBarzin/telemetry/go@latest` |
-| Android | `com.github.ViktorBarzin:telemetry` on JitPack | `implementation("com.github.ViktorBarzin:telemetry:android-v0.1.0")` with `maven("https://jitpack.io")` in `repositories` |
+| Android | `com.github.ViktorBarzin:telemetry` on JitPack | `implementation("com.github.ViktorBarzin:telemetry:android-v0.1.1")` with `maven("https://jitpack.io")` in `repositories` |
 
 Usage is in [`python/README.md`](python/README.md), the Go package docs
 ([`go/doc.go`](go/doc.go)) and the Android section below.
@@ -34,9 +34,38 @@ Events follow the [Segment spec](https://segment.com/docs/connections/spec/).
 | `type` | `track`, `identify`, or `screen` (Android) |
 | `event` | `noun.past_verb`, matching `^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$`, e.g. `recording.started` |
 | `userId` | the Person's Authentik `sub` once signed in |
-| `anonymousId` | always sent |
+| `anonymousId` | the browser's Rybbit visitor id when the event belongs to a browser request; otherwise none when `userId` is set, else a stable id. Never a new random id per event |
 | `properties` | snake_case keys (`^[a-z][a-z0-9_]*$`), at most 2,048 bytes as compact JSON |
 | write key | one per app, in Vault `secret/rybbit` under `write_keys` |
+
+### Server events and the browser's person
+
+Rybbit's browser script keeps a random visitor id in localStorage key
+`rybbit-visitor-id` and derives its user id as sha256(site id + ":" +
+anonymous id). A server event whose `anonymousId` is that visitor id
+therefore lands on the same Rybbit user as the browser's pageviews. The
+convention that makes this work:
+
+1. The browser sends `X-Visitor-Id: <rybbit-visitor-id>` on same-origin API
+   calls (`visitorHeaders()` in `@viktorbarzin/telemetry`).
+2. The backend reads it per request, along with the person's IP and
+   User-Agent: Python `RequestContextMiddleware` (ASGI) or
+   `request_context(headers, peer=...)`, Go `RequestMiddleware` or
+   `WithRequest(ctx, RequestFrom(r))`.
+3. Events sent while handling that request get:
+
+| Field | Value |
+|---|---|
+| `anonymousId` | an explicit one, else `X-Visitor-Id`. Without either: none when `userId` is set, else the configured default (`server:<app>` unless set) |
+| `context.ip` | `X-Real-Ip` (set by Traefik's real-ip middleware), else the first `X-Forwarded-For` entry, else the peer address |
+| `context.userAgent` | the request's User-Agent, unless it is a Segment SDK agent |
+
+The Event pipeline maps `context.ip` and `context.userAgent` to Rybbit's IP
+and user agent, so server events get a country and a device. It never sends
+an SDK's own agent to Rybbit, which would flag it as a bot. Up to 0.1.0 the
+Python and Go libraries gave every event without an anonymousId a new random
+uuid, so each anonymous server event counted as a new person; 0.2.0 removes
+that.
 
 The libraries check these rules before sending. An event that breaks one is
 dropped and logged as a warning; the Event pipeline rejects such events too.

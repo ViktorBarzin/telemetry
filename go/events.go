@@ -2,9 +2,9 @@ package telemetry
 
 import (
 	"context"
-	"crypto/rand"
 	"fmt"
 	"log/slog"
+	"net"
 
 	"github.com/segmentio/analytics-go/v3"
 )
@@ -85,9 +85,12 @@ func (c *Client) drop(ctx context.Context, kind string, err error) error {
 	return err
 }
 
-// Track queues a Product event. userId comes from WithEnduser and
-// anonymousId from WithAnonymousID (random when unset). An invalid event is
-// dropped with a warning and an error wrapping ErrInvalid.
+// Track queues a Product event. userId comes from WithEnduser. anonymousId
+// comes from WithAnonymousID, else the request's visitor id (WithRequest or
+// RequestMiddleware); without either, an event with a userId sends none and
+// one without sends Config's stable fallback. context.ip and
+// context.userAgent come from the request. An invalid event is dropped with
+// a warning and an error wrapping ErrInvalid.
 func (c *Client) Track(ctx context.Context, event string, props map[string]any) error {
 	if err := ValidateEventName(event); err != nil {
 		return c.drop(ctx, "event", err)
@@ -98,17 +101,23 @@ func (c *Client) Track(ctx context.Context, event string, props map[string]any) 
 	if c.segment == nil {
 		return nil
 	}
+	user := Enduser(ctx)
+	anon := anonymousID(ctx)
+	if anon == "" && user == "" {
+		anon = c.cfg.fallbackAnonymousID()
+	}
 	return c.segment.Enqueue(analytics.Track{
 		Event:       event,
-		UserId:      Enduser(ctx),
-		AnonymousId: anonymousID(ctx),
+		UserId:      user,
+		AnonymousId: anon,
 		Properties:  analytics.Properties(props),
-		Context:     c.messageContext(),
+		Context:     c.messageContext(ctx),
 	})
 }
 
-// Identify ties the request's anonymousId to the Person userID (their
-// Authentik sub), with optional traits.
+// Identify ties the request's anonymousId (WithAnonymousID, else the
+// visitor id, else none) to the Person userID (their Authentik sub), with
+// optional traits.
 func (c *Client) Identify(ctx context.Context, userID string, traits map[string]any) error {
 	if userID == "" {
 		return c.drop(ctx, "identify", fmt.Errorf("%w: identify without a user id", ErrInvalid))
@@ -123,7 +132,7 @@ func (c *Client) Identify(ctx context.Context, userID string, traits map[string]
 		UserId:      userID,
 		AnonymousId: anonymousID(ctx),
 		Traits:      analytics.Traits(traits),
-		Context:     c.messageContext(),
+		Context:     c.messageContext(ctx),
 	})
 }
 
@@ -144,24 +153,23 @@ func messageContext(cfg Config) analytics.Context {
 	}
 }
 
-func (c *Client) messageContext() *analytics.Context {
-	ctx := c.context
-	return &ctx
+func (c *Client) messageContext(ctx context.Context) *analytics.Context {
+	mc := c.context
+	req := CurrentRequest(ctx)
+	if ip := net.ParseIP(req.ClientIP); ip != nil {
+		mc.IP = ip
+	}
+	mc.UserAgent = req.UserAgent
+	return &mc
 }
 
+// anonymousID is the explicit id, else the request's visitor id, else "".
+// Never a random one: Rybbit would count each event as a new person.
 func anonymousID(ctx context.Context) string {
 	if id := AnonymousID(ctx); id != "" {
 		return id
 	}
-	return newUUID()
-}
-
-func newUUID() string {
-	var b [16]byte
-	_, _ = rand.Read(b[:]) // crypto/rand.Read never returns an error since Go 1.24
-	b[6] = b[6]&0x0f | 0x40
-	b[8] = b[8]&0x3f | 0x80
-	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
+	return CurrentRequest(ctx).VisitorID
 }
 
 // slogLogger routes analytics-go's messages to slog.Default().

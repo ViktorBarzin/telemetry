@@ -42,6 +42,11 @@ class Config:
     environment: str
     host: str | None = None
     dsn: str | None = None
+    default_anonymous_id: str | None = None
+
+    @property
+    def fallback_anonymous_id(self) -> str:
+        return self.default_anonymous_id or f"server:{self.app}"
 
     @property
     def production(self) -> bool:

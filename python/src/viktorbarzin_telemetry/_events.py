@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import logging
-import uuid
 from typing import Protocol
 
 from segment.analytics.client import Client
 
 from ._config import HOST_VARIABLE, Config, resolve_environment, resolve_host
 from ._context import current_context
+from ._request import current_request
 from ._scrub import register_secret
 from ._sentry import init_sentry
 from ._validation import JsonValue, Properties, event_name_problem, properties_problem
@@ -27,7 +27,7 @@ class EventClient(Protocol):
         event: str,
         properties: dict[str, JsonValue],
         context: dict[str, JsonValue],
-        anonymous_id: str,
+        anonymous_id: str | None,
     ) -> object: ...
 
     def identify(
@@ -36,7 +36,7 @@ class EventClient(Protocol):
         user_id: str,
         traits: dict[str, JsonValue],
         context: dict[str, JsonValue],
-        anonymous_id: str,
+        anonymous_id: str | None,
     ) -> object: ...
 
     def flush(self) -> None: ...
@@ -75,11 +75,29 @@ class Telemetry:
     def segment_client(self) -> Client | None:
         return self._client if isinstance(self._client, Client) else None
 
-    def _ids(self, user_id: str | None, anonymous_id: str | None) -> tuple[str | None, str]:
+    def _ids(self, user_id: str | None, anonymous_id: str | None) -> tuple[str | None, str | None]:
+        """The Person and anonymous ids for one message.
+
+        anonymousId is the explicit one, else ``log_context``'s, else the
+        request's visitor id. Without any of those, a message with a Person
+        needs none, and one without uses the config's stable fallback; never
+        a fresh random id, which Rybbit would count as a new person.
+        """
         ctx = current_context()
         user = user_id if user_id is not None else ctx.enduser_id
-        anon = anonymous_id or ctx.anonymous_id or str(uuid.uuid4())
+        anon = anonymous_id or ctx.anonymous_id or current_request().visitor_id
+        if anon is None and not user:
+            anon = self.config.fallback_anonymous_id
         return user, anon
+
+    def _message_context(self) -> dict[str, JsonValue]:
+        context = dict(self._context)
+        req = current_request()
+        if req.client_ip:
+            context["ip"] = req.client_ip
+        if req.user_agent:
+            context["userAgent"] = req.user_agent
+        return context
 
     def track(
         self,
@@ -101,7 +119,7 @@ class Telemetry:
                 user_id=user,
                 event=event,
                 properties=props,
-                context=dict(self._context),
+                context=self._message_context(),
                 anonymous_id=anon,
             )
         return True
@@ -122,7 +140,10 @@ class Telemetry:
         if self._client is not None:
             _, anon = self._ids(user_id, anonymous_id)
             self._client.identify(
-                user_id=user_id, traits=values, context=dict(self._context), anonymous_id=anon
+                user_id=user_id,
+                traits=values,
+                context=self._message_context(),
+                anonymous_id=anon,
             )
         return True
 
@@ -144,13 +165,16 @@ def configure(
     host: str | None = None,
     *,
     client: EventClient | None = None,
+    default_anonymous_id: str | None = None,
 ) -> Telemetry:
     """Set up events (and Sentry when ``dsn`` is given) for this process.
 
     Sending happens only when the environment, explicit or from
     ``$TELEMETRY_ENVIRONMENT``, is ``production``. ``host`` is the Event
     pipeline's base URL, explicit or from ``$TELEMETRY_HOST``; production
-    without one raises ValueError.
+    without one raises ValueError. ``default_anonymous_id`` is the
+    anonymousId of events with neither a Person nor a visitor id; it
+    defaults to ``server:<app>``.
     """
     global _default
     config = Config(
@@ -160,6 +184,7 @@ def configure(
         environment=resolve_environment(environment),
         host=resolve_host(host),
         dsn=dsn,
+        default_anonymous_id=default_anonymous_id,
     )
     register_secret(write_key)
     _default = Telemetry(config, client=client)

@@ -44,6 +44,16 @@ type Config struct {
 	Endpoint string
 	// DSN is the app's GlitchTip DSN, https://<key>@<app host>/_t/x/<project id>.
 	DSN string
+	// DefaultAnonymousID is the anonymousId of events with neither a Person
+	// nor a visitor id, e.g. from a worker. Empty means "server:<App>".
+	DefaultAnonymousID string
+}
+
+func (c Config) fallbackAnonymousID() string {
+	if c.DefaultAnonymousID != "" {
+		return c.DefaultAnonymousID
+	}
+	return "server:" + c.App
 }
 
 func (c Config) environment() string { return ResolveEnvironment(c.Environment) }

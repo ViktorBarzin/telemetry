@@ -5,9 +5,11 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net"
 	"strings"
 	"sync"
 	"testing"
+	"testing/quick"
 
 	"github.com/segmentio/analytics-go/v3"
 )
@@ -69,20 +71,108 @@ func TestTrackSendsAValidEvent(t *testing.T) {
 	}
 }
 
-func TestAnonymousIDIsAlwaysSent(t *testing.T) {
-	c, fake, _ := newProd(t)
+func TestAnonymousEventsShareOneStableID(t *testing.T) {
+	prop := func(n uint8) bool {
+		c, fake, _ := newProd(t)
+		for i := 0; i < int(n%20)+2; i++ {
+			if err := c.Track(context.Background(), "trip.created", nil); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, m := range fake.msgs {
+			tr := m.(analytics.Track)
+			if tr.AnonymousId != "server:tv" || tr.UserId != "" {
+				return false
+			}
+		}
+		return true
+	}
+	if err := quick.Check(prop, nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestACallerSuppliedDefaultAnonymousIDIsUsed(t *testing.T) {
+	fake := &fakeSegment{}
+	cfg := prodConfig()
+	cfg.DefaultAnonymousID = "worker-7"
+	c, err := New(cfg, WithSegmentClient(fake))
+	if err != nil {
+		t.Fatal(err)
+	}
 	for i := 0; i < 2; i++ {
-		if err := c.Track(context.Background(), "trip.created", nil); err != nil {
-			t.Fatal(err)
+		_ = c.Track(context.Background(), "trip.created", nil)
+	}
+	for _, m := range fake.msgs {
+		if id := m.(analytics.Track).AnonymousId; id != "worker-7" {
+			t.Fatalf("anonymous id %q", id)
 		}
 	}
-	a := fake.msgs[0].(analytics.Track).AnonymousId
-	b := fake.msgs[1].(analytics.Track).AnonymousId
-	if a == "" || b == "" || a == b {
-		t.Fatalf("anonymous ids %q %q", a, b)
+}
+
+func TestAKnownPersonWithoutAVisitorSendsNoAnonymousID(t *testing.T) {
+	c, fake, _ := newProd(t)
+	ctx := WithEnduser(context.Background(), "sub-1")
+	if err := c.Track(ctx, "trip.created", nil); err != nil {
+		t.Fatal(err)
 	}
-	if fake.msgs[0].(analytics.Track).UserId != "" {
-		t.Fatal("user id set without one in context")
+	if err := c.Identify(context.Background(), "sub-1", nil); err != nil {
+		t.Fatal(err)
+	}
+	tr, id := fake.msgs[0].(analytics.Track), fake.msgs[1].(analytics.Identify)
+	if tr.UserId != "sub-1" || tr.AnonymousId != "" || id.AnonymousId != "" {
+		t.Fatalf("track %+v identify %+v", tr, id)
+	}
+}
+
+func TestAnonymousIDPrecedenceInARequest(t *testing.T) {
+	tests := []struct {
+		name     string
+		explicit string
+		user     string
+		want     string
+	}{
+		{"visitor", "", "", "v-1"},
+		{"visitor with person", "", "sub-1", "v-1"},
+		{"explicit beats visitor", "anon-x", "", "anon-x"},
+		{"explicit with person", "anon-x", "sub-1", "anon-x"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, fake, _ := newProd(t)
+			ctx := WithRequest(context.Background(), Request{VisitorID: "v-1"})
+			if tt.explicit != "" {
+				ctx = WithAnonymousID(ctx, tt.explicit)
+			}
+			if tt.user != "" {
+				ctx = WithEnduser(ctx, tt.user)
+			}
+			_ = c.Track(ctx, "trip.created", nil)
+			_ = c.Identify(ctx, "sub-1", nil)
+			tr, id := fake.msgs[0].(analytics.Track), fake.msgs[1].(analytics.Identify)
+			if tr.AnonymousId != tt.want || id.AnonymousId != tt.want {
+				t.Fatalf("track %q identify %q, want %q", tr.AnonymousId, id.AnonymousId, tt.want)
+			}
+		})
+	}
+}
+
+func TestRequestIPAndAgentGoInTheEventContext(t *testing.T) {
+	prop := func(a, b, c, d byte) bool {
+		ip := net.IPv4(a, b, c, d).String()
+		client, fake, _ := newProd(t)
+		ctx := WithRequest(context.Background(), Request{ClientIP: ip, UserAgent: browserUA})
+		_ = client.Track(ctx, "trip.created", nil)
+		_ = client.Identify(ctx, "sub-1", nil)
+		_ = client.Track(context.Background(), "trip.created", nil)
+		tr, id, bare := fake.msgs[0].(analytics.Track), fake.msgs[1].(analytics.Identify), fake.msgs[2].(analytics.Track)
+		return tr.Context.IP.String() == ip && tr.Context.UserAgent == browserUA &&
+			id.Context.IP.String() == ip && id.Context.UserAgent == browserUA &&
+			tr.Context.App.Name == "tv" &&
+			bare.Context.IP == nil && bare.Context.UserAgent == ""
+	}
+	if err := quick.Check(prop, nil); err != nil {
+		t.Fatal(err)
 	}
 }
 

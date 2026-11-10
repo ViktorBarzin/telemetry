@@ -12,6 +12,7 @@ const (
 	anonymousKey
 	traceKey
 	attrsKey
+	requestKey
 )
 
 type traceIDs struct{ traceID, spanID string }
@@ -28,8 +29,8 @@ func Enduser(ctx context.Context) string {
 	return s
 }
 
-// WithAnonymousID sets the anonymousId sent with events, e.g. one a browser
-// passed along. Without it each event gets a random id.
+// WithAnonymousID sets the anonymousId sent with events. It overrides the
+// request's visitor id (see Request).
 func WithAnonymousID(ctx context.Context, id string) context.Context {
 	return context.WithValue(ctx, anonymousKey, id)
 }

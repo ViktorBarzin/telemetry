@@ -23,7 +23,7 @@ from viktorbarzin_telemetry import (
 class Sent:
     kind: str
     user_id: str | None
-    anonymous_id: str
+    anonymous_id: str | None
     name: str
     payload: Mapping[str, JsonValue]
     context: Mapping[str, JsonValue]
@@ -41,7 +41,7 @@ class FakeClient:
         event: str,
         properties: dict[str, JsonValue],
         context: dict[str, JsonValue],
-        anonymous_id: str,
+        anonymous_id: str | None,
     ) -> object:
         self.sent.append(Sent("track", user_id, anonymous_id, event, properties, context))
         return None
@@ -52,7 +52,7 @@ class FakeClient:
         user_id: str,
         traits: dict[str, JsonValue],
         context: dict[str, JsonValue],
-        anonymous_id: str,
+        anonymous_id: str | None,
     ) -> object:
         self.sent.append(Sent("identify", user_id, anonymous_id, "", traits, context))
         return None
@@ -84,14 +84,83 @@ def test_track_sends_a_valid_event_with_app_context() -> None:
     assert sent.context == {"app": {"name": "tv", "version": "1.2.3"}}
 
 
-def test_anonymous_id_is_always_sent() -> None:
+@given(st.integers(min_value=2, max_value=20))
+def test_anonymous_events_share_one_stable_id(n: int) -> None:
     t, fake = _prod()
+    for _ in range(n):
+        t.track("trip.created")
+    ids = {s.anonymous_id for s in fake.sent}
+    assert ids == {"server:tv"}
+    assert all(s.user_id is None for s in fake.sent)
+
+
+def test_a_caller_supplied_default_anonymous_id_is_used() -> None:
+    fake = FakeClient()
+    config = Config(
+        app="tv",
+        write_key="wk",
+        release="1",
+        environment="production",
+        default_anonymous_id="worker-7",
+    )
+    t = Telemetry(config, client=fake)
     t.track("trip.created")
     t.track("trip.created")
-    first, second = fake.sent
-    assert first.anonymous_id and second.anonymous_id
-    assert first.anonymous_id != second.anonymous_id
-    assert first.user_id is None
+    assert [s.anonymous_id for s in fake.sent] == ["worker-7", "worker-7"]
+
+
+@pytest.mark.parametrize("kind", ["track", "identify"])
+def test_a_known_person_without_a_visitor_sends_no_anonymous_id(kind: str) -> None:
+    t, fake = _prod()
+    if kind == "track":
+        t.track("trip.created", user_id="sub-1")
+    else:
+        t.identify("sub-1")
+    [sent] = fake.sent
+    assert (sent.user_id, sent.anonymous_id) == ("sub-1", None)
+
+
+VISITOR = {"X-Visitor-Id": "v-1", "X-Real-Ip": "81.2.69.142", "User-Agent": "Mozilla/5.0 x"}
+
+
+@pytest.mark.parametrize(
+    ("explicit", "log_anon", "user", "expected"),
+    [
+        (None, None, None, "v-1"),
+        (None, None, "sub-1", "v-1"),
+        ("anon-x", None, None, "anon-x"),
+        (None, "anon-log", None, "anon-log"),
+        ("anon-x", "anon-log", "sub-1", "anon-x"),
+    ],
+)
+def test_anonymous_id_precedence_in_a_request(
+    explicit: str | None, log_anon: str | None, user: str | None, expected: str
+) -> None:
+    t, fake = _prod()
+    with telemetry.request_context(VISITOR), log_context(anonymous_id=log_anon):
+        t.track("trip.created", user_id=user, anonymous_id=explicit)
+        t.identify("sub-1", anonymous_id=explicit)
+    tracked, identified = fake.sent
+    assert tracked.anonymous_id == identified.anonymous_id == expected
+
+
+@given(
+    ip=st.ip_addresses().map(str),
+    agent=st.from_regex(r"Mozilla/5\.0 \([A-Za-z0-9 ;]{1,30}\)", fullmatch=True),
+)
+def test_request_ip_and_agent_go_in_the_event_context(ip: str, agent: str) -> None:
+    t, fake = _prod()
+    with telemetry.request_context({"X-Real-Ip": ip, "User-Agent": agent}):
+        t.track("trip.created", user_id="sub-1")
+        t.identify("sub-1")
+    for sent in fake.sent:
+        assert sent.context == {
+            "app": {"name": "tv", "version": "1.2.3"},
+            "ip": ip,
+            "userAgent": agent,
+        }
+    t.track("trip.created")
+    assert fake.sent[-1].context == {"app": {"name": "tv", "version": "1.2.3"}}
 
 
 def test_ids_come_from_log_context() -> None:
